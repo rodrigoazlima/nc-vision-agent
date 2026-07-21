@@ -1,0 +1,13 @@
+*
+!requirements.txt
+!run.py
+!.system
+!.system/**
+!.knowledge-base
+!.knowledge-base/**
+!state
+!state/**
+!tools
+!tools/**
+!prompts
+!prompts/**
