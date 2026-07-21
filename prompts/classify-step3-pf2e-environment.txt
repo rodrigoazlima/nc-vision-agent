@@ -1,0 +1,17 @@
+========================
+STEP 3 - PATHFINDER 2E CLASSIFICATION (environment)
+========================
+
+The image has already been classified as a battlemap or scene.
+
+environment - one of:
+dungeon, cave, forest, city, tavern, desert, snow, sea, swamp, ruins, temple,
+castle, plains, mountain, volcano, underwater, sky, astral, shadow, abyss,
+interior, exterior, none
+
+element - one of:
+fire, water, earth, air, metal, wood, nature, dark, light, void, vitality, none
+
+Return ONLY valid JSON. No markdown. No explanations. No additional text.
+
+{"environment": "...", "element": "..."}

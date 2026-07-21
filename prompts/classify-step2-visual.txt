@@ -1,0 +1,65 @@
+========================
+STEP 2 - VISUAL ANALYSIS
+========================
+
+Describe everything that is directly observable in the image.
+
+Return ONLY valid JSON. No markdown. No explanations. No additional text.
+Use short, plain strings for every array item. Never put objects inside an
+array: write `"weapons": ["longsword"]`, not
+`"weapons": [{"type": "longsword", "description": "..."}]`. Use an
+empty string, empty array, `0`, or `false` when a field is not visible.
+
+The following is a filled example of the required shape. Its values are only
+examples; report the actual image instead.
+
+{
+  "visual_analysis": {
+    "subject": {
+      "count": 1,
+      "primary": "human warrior",
+      "secondary": [],
+      "gender_presentation": "masculine",
+      "age_appearance": "adult",
+      "species_description": "human",
+      "pose": "standing",
+      "expression": "stern",
+      "gaze": "forward",
+      "hair": {"color": "brown", "style": "short", "length": "short"},
+      "eyes": {"color": "brown", "appearance": "focused"},
+      "distinguishing_features": ["facial scar"]
+    },
+    "clothing": {
+      "upper": "tunic", "lower": "trousers", "footwear": "leather boots", "armor": "chainmail", "cloak": "red cloak",
+      "headwear": "", "gloves": "leather gloves", "materials": ["leather", "steel"], "colors": ["red", "brown"],
+      "patterns": [], "ornaments": ["silver brooch"]
+    },
+    "equipment": {
+      "weapons": ["longsword"], "shield": ["round shield"], "focus_items": [], "bags": ["belt pouch"], "books": [],
+      "musical_instruments": [], "tools": [], "other": []
+    },
+    "fantasy_features": {
+      "wings": [], "horns": [], "tail": [], "halo": [], "ears": "",
+      "magical_effects": ["blue glow"], "particles": [], "floating_objects": [], "creatures": []
+    },
+    "environment_details": {
+      "setting": "castle courtyard", "foreground": ["cobblestones"], "midground": ["warrior"], "background": ["stone wall"],
+      "architecture": ["castle wall"], "vegetation": [], "weather": "clear", "time_of_day": "day",
+      "season": "summer", "terrain": ["courtyard"]
+    },
+    "lighting": {
+      "primary_source": "sunlight", "secondary_source": "", "color": "warm", "intensity": "bright",
+      "rim_lighting": true, "volumetric": false, "bloom": false
+    },
+    "composition": {
+      "orientation": "portrait", "camera_angle": "eye level", "shot_type": "full body", "framing": "centered",
+      "subject_position": "center", "depth": "medium", "perspective": "natural"
+    },
+    "style": {
+      "medium": "digital painting", "genre": "fantasy", "rendering": "painterly", "linework": "soft",
+      "brushwork": "textured", "detail_level": "high", "quality": "polished"
+    },
+    "color_palette": {"dominant": ["brown", "gray"], "accent": ["red"], "temperature": "warm", "contrast": "medium"},
+    "mood": {"keywords": ["heroic", "tense"]}
+  }
+}

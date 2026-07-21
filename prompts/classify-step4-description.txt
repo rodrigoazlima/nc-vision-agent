@@ -1,0 +1,11 @@
+========================
+STEP 4 - FLAVOR DESCRIPTION
+========================
+
+Write exactly three concise sentences as ONE continuous string value (not separate fields/keys): first the visible subject and setting, then the atmosphere/lighting/visual highlights, then a possible encounter, NPC role, or scene usage for a Pathfinder GM without inventing backstory.
+
+Do not mention Pathfinder by name.
+
+Return ONLY valid JSON. No markdown. No explanations. No additional text.
+
+{"description": "A weathered stone bridge crosses a misty ravine. Shafts of dawn light cut through the fog, casting long shadows across the moss-covered rails. This could serve as a tense border crossing where a wary guard questions travelers."}

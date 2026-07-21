@@ -1,0 +1,30 @@
+========================
+STEP 3 - PATHFINDER 2E CLASSIFICATION (character)
+========================
+
+The image has already been classified as a portrait or body shot of a single subject.
+
+ancestry - one of:
+human, elf, dwarf, halfling, gnome, goblin, leshy, lizardfolk, ratfolk, tengu,
+catfolk, orc, shoony, anadi, grippli, automaton, fleshwarp, fetchling, sprite,
+kitsune, kobold, android, strix, vanara, gnoll, goloma, hobgoblin, poppet, shisk,
+conrasu, beastkin, azarketi, dhampir, aasimar, tiefling, changeling, half-elf,
+half-orc, duskwalker, geniekin, ifrit, oread, sylph, undine, nagaji, vishkanya,
+dark-elf, none
+
+class - one of:
+alchemist, barbarian, bard, champion, cleric, druid, fighter, gunslinger, inventor,
+investigator, kineticist, magus, monk, oracle, psychic, ranger, rogue, sorcerer,
+summoner, swashbuckler, thaumaturge, witch, wizard, animist, exemplar, commander, none
+
+If the subject is clearly a monster without a recognizable class:
+- set ancestry = "none" and class = "none"
+- set creature_type to one of: aberration, animal, astral, beast, celestial,
+  construct, dragon, dream, elemental, fey, fiend, fungus, giant, humanoid,
+  monitor, ooze, phantom, plant, spirit, time, undead, none
+
+Otherwise set creature_type = "none".
+
+Return ONLY valid JSON. No markdown. No explanations. No additional text.
+
+{"ancestry": "...", "class": "...", "creature_type": "..."}
