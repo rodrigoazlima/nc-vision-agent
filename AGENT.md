@@ -31,8 +31,8 @@ dependencies:
   - ingestion
 dispatch_config: agent.json
 owned_tools:
-  - tools/classify_images.py
-  - tools/extract_text.py
+  - src/nc_vision_agent/tools/classify_images.py
+  - src/nc_vision_agent/tools/extract_text.py
 responsibilities:
   - Pre-flight check LM Studio at localhost:1234 before processing batch
   - Detect transparent-corner PNGs as tokens (≥2 of 4 corners with alpha < 128)
@@ -75,9 +75,10 @@ responsibilities:
   - Update inbox-queue.json agents.vision = done for each processed file
   - Emit image-classified signal to signals dir (fire-and-forget per G5)
   - Abort batch silently on connection-error (do not mark image as failed)
-  - `python agents/vision/tools/classify_images.py --retry-failed` clears only
-    failed `path:` state entries, then reclassifies the normal batch; successful
-    entries are never reset
+  - `python src/nc_vision_agent/tools/classify_images.py --retry-failed` (or
+    `nc-vision-agent --retry-failed` once installed) clears only failed `path:`
+    state entries, then reclassifies the normal batch; successful entries are
+    never reset
   - Batch: 10 images per run; process non-PNG before PNG (tokens last)
   - (extract_text.py) For each already-classified image not yet text-extracted, call
     Qwen3-VL for readable text (signage, banners, scrolls, engravings, letters)
@@ -104,10 +105,10 @@ commit_scope:
 
 ## Pipeline Configuration
 
-All tunables below live in `agents/registry.yaml` → `agents.vision.options` (shared
-default) and are overridable per-machine via `agents/vision/agent.json` →
-`tasks.vision-agent.pipeline` (same precedence as `llm_endpoints`: agent.json >
-registry.yaml > `classify_images.py`'s hardcoded `_PIPELINE_DEFAULTS` fallback).
+All tunables below live in `./registry.yaml` (repo root, optional) → `agents.vision.options`
+and are overridable via `./agent.json` (repo root, optional) → `tasks.vision-agent.pipeline`
+(same precedence as `llm_endpoints`: agent.json > registry.yaml > `classify_images.py`'s
+hardcoded `_PIPELINE_DEFAULTS` fallback). Neither file exists by default standalone.
 
 | Key | Default | Meaning |
 |---|---|---|

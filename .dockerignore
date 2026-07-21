@@ -1,13 +1,13 @@
 *
+!pyproject.toml
 !requirements.txt
 !run.py
+!install.py
 !.system
 !.system/**
 !.knowledge-base
 !.knowledge-base/**
 !state
 !state/**
-!tools
-!tools/**
-!prompts
-!prompts/**
+!src
+!src/**

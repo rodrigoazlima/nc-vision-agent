@@ -10,7 +10,7 @@ On each run:
 3. Call `write_log` with: images processed, drafts written, failures
 
 ## Text-on-image extraction
-A separate tool (`vision.tools.extract_text`) runs OCR-style text extraction over
+A separate tool (`nc_vision_agent.tools.extract_text`) runs OCR-style text extraction over
 already-classified images:
 1. Call `extract_image_text` (or its own `run_batch`) to find any readable text
    (signage, banners, scrolls, engravings, letters) in a classified image

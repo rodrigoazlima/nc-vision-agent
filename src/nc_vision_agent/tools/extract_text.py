@@ -1,4 +1,4 @@
-"""vision.tools.extract_text
+"""nc_vision_agent.tools.extract_text
 
 Extracts any readable text visible in classified images (signage, banners,
 scrolls, engravings, letters) via Qwen3-VL and appends a "## Text on Image"
@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 _TOOLS_DIR    = Path(__file__).resolve().parent
-_AGENTS_DIR   = _TOOLS_DIR.parents[1]
-_PROJECT_ROOT = _AGENTS_DIR.parent
+_PROJECT_ROOT = _TOOLS_DIR.parents[2]  # repo root (parent of src/)
 
-if str(_AGENTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR))
+# nexus.shared is copied into .system/ at deploy/runtime - see install.py.
+_SYSTEM_SRC = _PROJECT_ROOT / ".system" / "src"
+if str(_SYSTEM_SRC) not in sys.path:
+    sys.path.insert(0, str(_SYSTEM_SRC))
 
 from nexus.shared import FrontmatterIO, LLMClient, Logger, LLMOfflineError, image_tag  # noqa: E402
 from nexus.shared.config import LLMEndpointConfig  # noqa: E402
@@ -32,9 +33,10 @@ BATCH_SIZE      = 10
 
 _VAULT_ROOT   = _PROJECT_ROOT / ".knowledge-base"
 _PROCESSING   = _VAULT_ROOT / "01-Processing"
-_AGENT_STATE  = _AGENTS_DIR / "vision" / "state"
+_AGENT_STATE  = _PROJECT_ROOT / "state"
 _LOGS_DIR     = _AGENT_STATE / "logs"
-_MASTER_LOG   = _AGENTS_DIR / "runtime" / "state" / "logs" / "automation.log"
+_SHARED_STATE = _PROJECT_ROOT / ".system" / "state"
+_MASTER_LOG   = _SHARED_STATE / "logs" / "automation.log"
 _PROC_IMAGES  = _AGENT_STATE / "processed-images.json"
 _TEXT_STATE   = _AGENT_STATE / "text-extractions.json"
 
@@ -46,7 +48,7 @@ _LLM_CFG = load_llm_endpoint(
         type     = "vision",
         provider = "lmstudio",
     ),
-    agent_dir    = _AGENTS_DIR / "vision",
+    agent_dir    = _PROJECT_ROOT,
     task_id      = TASK_ID,
     project_root = _PROJECT_ROOT,
 )

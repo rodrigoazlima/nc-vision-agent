@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Scope
 
-This is the **vision agent** (`agents/vision/`) inside the Nexus Campaigns monorepo. Full pipeline architecture lives in the root `../../CLAUDE.md` and `../../AGENTS.md` - read those for the multi-agent runner, vault folder rules, and metadata standard. This file covers only what's specific to working inside `agents/vision/`.
+This is **nc-vision-agent**, a standalone extraction of the Nexus Campaigns monorepo's vision agent (originally `agents/vision/`). It runs independently, but still depends on that monorepo's shared library (`nexus.shared`): not vendored here, expected at `.system/src` (see `install.py` and "Architecture within this folder" below). Full pipeline architecture (multi-agent runner, vault folder rules, metadata standard) lives in the monorepo's root `CLAUDE.md`/`AGENTS.md`, not duplicated here.
 
 ## What this agent does
 
@@ -33,35 +33,38 @@ Full contract (inputs/outputs/responsibilities/restrictions) is in `AGENT.md` fr
 ## Commands
 
 ```powershell
-# Run this agent once, standalone (bypasses runner scheduling)
-python agents\vision\tools\classify_images.py
+# Pre-flight: validates .system/ (nexus.shared) is present and version-compatible
+python install.py
 
-# Or via the shared runner (respects intervalSeconds / preconditions)
-python -m nexus.runner --task vision-agent --force
+# Run this agent once, standalone
+python run.py
+# equivalently:
+python src\nc_vision_agent\tools\classify_images.py
 
 # One-time migration for old short-body drafts in 01-Processing/ (safe to re-run)
-python agents\vision\tools\backfill_short_drafts.py
+python -m nc_vision_agent.tools.backfill_short_drafts
 
 # Extract text-on-image ("## Text on Image") for already-classified images
-python agents\vision\tools\extract_text.py
+python src\nc_vision_agent\tools\extract_text.py
 
-# Relevant tests
-pytest agents/tests -k vision
+# Editable install (registers console_scripts: nc-vision-agent, nc-vision-agent-extract-text)
+pip install -e .
 ```
 
-LM Studio must be running at `http://localhost:1234/v1`. Vision model is selected via `agents/registry.yaml` → `llm_endpoints.vision_llm.model` (`classify_images.py` reads it through `shared.loaders.load_vault_config()` at import time, falling back to `qwen3-vl-4b-instruct` if registry.yaml is missing/malformed). `agent.json`'s dispatch config is unrelated - it only governs `claude-code`/`lm-studio` dispatch of the agent process itself, not this script's internal vision LLM calls. If the LLM is offline, the batch aborts silently - no image is marked failed.
+LM Studio must be running at `http://localhost:1234/v1`. Vision model is selected via `./registry.yaml` (optional, repo root) → `llm_endpoints.vision_llm.model`, falling back to `qwen3-vl-4b-instruct` if missing/malformed. `agent.json` (optional, repo root) is unrelated - it only governs `claude-code`/`lm-studio` dispatch of the agent process itself, not this script's internal vision LLM calls. If the LLM is offline, the batch aborts silently - no image is marked failed.
 
 ## Architecture within this folder
 
-- `tools/classify_images.py` - the whole agent: state I/O, token detection, face-match, slug builders, per-type draft body generation, `main()` batch loop, the public `classify_image_full()`/`refine_tags_with_library()` multi-step/cycle classification functions, `_load_pipeline_config()` (registry.yaml/agent.json config loader), and the `TOOLS`/`call_tool()` agentic interface consumed by `agent.json`'s dispatch.
-- `tools/backfill_short_drafts.py` - one-off migration importing body builders from `classify_images.py`; only rewrites drafts with `body_lines < 15`.
-- `tools/extract_text.py` - OCR-style text extraction over already-classified images; appends `## Text on Image` to the matching draft. Own `TOOLS`/`call_tool()` agentic interface (`extract_image_text`, `run_batch`), own state file, own log.
-- `prompts/system.md` - role/workflow instructions for `claude-code`/agentic dispatch, covering both `classify_images.py` (tool-call sequence: `list_pending_images` → `run_batch` → `write_log`) and `extract_text.py` (`extract_image_text` / `run_batch`).
-- `prompts/classify-step{1..4}-*.txt` - the 5 raw prompt files sent to the vision LLM, one per `classify_image_full` required step (STEP 3 has a `-character` and `-environment` variant - see above); together they define the JSON schema and full PF2e vocabulary the model must answer with (kept in sync with `shared/models.py` `PF2E_*` constants - update both together). See `docs/agents/vision/image-classification-workflow.md` for the full flow.
+- `src/nc_vision_agent/tools/classify_images.py` - the whole agent: state I/O, token detection, face-match, slug builders, per-type draft body generation, `main()` batch loop, the public `classify_image_full()`/`refine_tags_with_library()` multi-step/cycle classification functions, `_load_pipeline_config()` (registry.yaml/agent.json config loader), and the `TOOLS`/`call_tool()` agentic interface consumed by `agent.json`'s dispatch.
+- `src/nc_vision_agent/tools/backfill_short_drafts.py` - one-off migration importing body builders from `classify_images.py`; only rewrites drafts with `body_lines < 15`.
+- `src/nc_vision_agent/tools/extract_text.py` - OCR-style text extraction over already-classified images; appends `## Text on Image` to the matching draft. Own `TOOLS`/`call_tool()` agentic interface (`extract_image_text`, `run_batch`), own state file, own log.
+- `src/nc_vision_agent/prompts/system.md` - role/workflow instructions for `claude-code`/agentic dispatch, covering both `classify_images.py` (tool-call sequence: `list_pending_images` → `run_batch` → `write_log`) and `extract_text.py` (`extract_image_text` / `run_batch`).
+- `src/nc_vision_agent/prompts/classify-step{1..4}-*.txt` - the 5 raw prompt files sent to the vision LLM, one per `classify_image_full` required step (STEP 3 has a `-character` and `-environment` variant - see above); together they define the JSON schema and full PF2e vocabulary the model must answer with (kept in sync with the monorepo's `nexus.shared.models` `PF2E_*` constants - update both together). See `docs/agents/vision/image-classification-workflow.md` (monorepo) for the full flow.
 - `state/processed-images.json` - `{version, images: {sha256: entry}, pathIndex: {relpath: sha256}}`. Failed images are keyed `path:{relpath}` in `pathIndex` (no sha), so `_get_folder_candidates` filters them out by that prefix, not by a `status` field alone. Each entry also carries `candidate_tags` (list[str], possibly empty) - the free-form brainstorm harvested from that image's `visual_analysis`.
 - `state/token-links.json` - token→source-portrait face-match links, keyed by token sha256.
 - `state/text-extractions.json` - `{sha256: {path, hasText}}`, tracks which classified images `extract_text.py` has already checked so they aren't re-checked every run.
-- `.agents/shared` and `.system/state` - junctions into `agents/shared/` (the `IVaultGuard`/`FrontmatterIO`/`LLMClient`/`Logger`/`SignalEmitter` interfaces from the root architecture) and `system/state/` respectively; imports resolve via `sys.path.insert(_AGENTS_DIR)` at the top of each tool script, not via these junctions.
+- `.system/` - **not checked in** (gitignored); the monorepo's `system/` folder (containing `src/nexus/...`, the shared agent library) is copied or bind-mounted here at deploy/runtime. `install.py` validates it's present and version-compatible before any tool script's imports run. `.system/state/` also doubles as the cross-agent bus (`inbox-queue.json`, signals, `automation.log`) - see `_SHARED_STATE` in `classify_images.py`.
+- `state/tag-library.json`, `./registry.yaml`, `./agent.json` - optional local overrides for state the monorepo's classification agent / registry / dispatch config would otherwise provide; all three are absent by default and every read degrades gracefully (defaults / `{"tags": {}}`) when missing.
 
 ## Conventions specific to this agent
 

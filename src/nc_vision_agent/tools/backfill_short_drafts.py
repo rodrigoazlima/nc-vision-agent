@@ -1,11 +1,11 @@
-"""vision.tools.backfill_short_drafts
+"""nc_vision_agent.tools.backfill_short_drafts
 
 One-time migration: enrich existing short draft files in 01-Processing/ that were
 written by the old minimal template. Reads classification data from processed-images.json
 and rewrites the body using the new type-specific rich templates from classify_images.py.
 
 Run once:
-    python agents/vision/tools/backfill_short_drafts.py
+    python -m nc_vision_agent.tools.backfill_short_drafts
 
 Safe to re-run: files are only updated if body_lines < 15.
 """
@@ -19,17 +19,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 _TOOLS_DIR    = Path(__file__).resolve().parent
-_AGENTS_DIR   = _TOOLS_DIR.parents[1]
-_PROJECT_ROOT = _AGENTS_DIR.parent
+_PROJECT_ROOT = _TOOLS_DIR.parents[2]  # repo root (parent of src/)
 
-if str(_AGENTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR))
+# nexus.shared is copied into .system/ at deploy/runtime - see install.py.
+_SYSTEM_SRC = _PROJECT_ROOT / ".system" / "src"
+if str(_SYSTEM_SRC) not in sys.path:
+    sys.path.insert(0, str(_SYSTEM_SRC))
 
 from nexus.shared import FrontmatterIO  # noqa: E402
 from nexus.shared.models import Element, Environment, ImageType, VisionClassification  # noqa: E402
 
-# Import the rich body builders from classify_images
-from vision.tools.classify_images import (  # noqa: E402
+# Import the rich body builders from classify_images (own package, not nexus.shared)
+from nc_vision_agent.tools.classify_images import (  # noqa: E402
     _battlemap_body,
     _portrait_body,
     _scene_body,
@@ -38,7 +39,7 @@ from vision.tools.classify_images import (  # noqa: E402
 
 _VAULT_ROOT  = _PROJECT_ROOT / ".knowledge-base"
 _PROCESSING  = _VAULT_ROOT / "01-Processing"
-_AGENT_STATE = _AGENTS_DIR / "vision" / "state"
+_AGENT_STATE = _PROJECT_ROOT / "state"
 _PROC_IMAGES = _AGENT_STATE / "processed-images.json"
 
 SHORT_LINE_THRESHOLD = 15

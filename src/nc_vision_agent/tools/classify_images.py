@@ -1,4 +1,4 @@
-"""vision.tools.classify_images
+"""nc_vision_agent.tools.classify_images
 
 Classifies RPG images in 00-Inbox/images/ via Qwen3-VL.
 Renames images to canonical slug format in-place.
@@ -20,11 +20,15 @@ from typing import Any, Optional
 import yaml
 
 _TOOLS_DIR    = Path(__file__).resolve().parent
-_AGENTS_DIR   = _TOOLS_DIR.parents[1]
-_PROJECT_ROOT = _AGENTS_DIR.parent
+_PACKAGE_DIR  = _TOOLS_DIR.parent            # src/nc_vision_agent
+_PROJECT_ROOT = _TOOLS_DIR.parents[2]        # repo root (parent of src/)
 
-if str(_AGENTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_AGENTS_DIR))
+# The nexus.shared library is not vendored - it's copied into .system/ at
+# deploy/runtime (see install.py, which validates it's present + compatible
+# before this module's imports below are reached).
+_SYSTEM_SRC = _PROJECT_ROOT / ".system" / "src"
+if str(_SYSTEM_SRC) not in sys.path:
+    sys.path.insert(0, str(_SYSTEM_SRC))
 
 from nexus.shared import (  # noqa: E402
     FrontmatterIO,
@@ -45,10 +49,12 @@ from nexus.shared.llm_client import _resize_and_encode  # noqa: E402
 from nexus.shared.loaders import load_llm_endpoint  # noqa: E402
 from nexus.shared.models import Element, Environment, ImageType  # noqa: E402
 
-# classification.tools.enrich_tags owns state/tag-library.json - read-only
-# here (cycle 4 aligns against it, never writes it; classification is the
-# sole writer of canonical entries/aliases/counts).
-_CLASSIFICATION_TAG_LIBRARY = _AGENTS_DIR / "classification" / "state" / "tag-library.json"
+# In the monorepo this reads the classification agent's canonical
+# state/tag-library.json (read-only, never written here). Standalone there's
+# no sibling classification agent - this is an optional local override an
+# operator can drop in; absent by default, _read_tag_library() falls back to
+# {"tags": {}} either way.
+_CLASSIFICATION_TAG_LIBRARY = _PROJECT_ROOT / "state" / "tag-library.json"
 
 # Same 18-value taxonomy as classification agent's _ALLOWED_TYPES
 # (agents/classification/tools/enrich_tags.py) - kept in sync manually, same
@@ -119,8 +125,8 @@ _PIPELINE_DEFAULTS: dict[str, Any] = {
     "step_max_tokens": {"type": 256, "visual": 4096, "pf2e": 512, "description": 512},
 }
 
-_REGISTRY_FILE = _AGENTS_DIR / "registry.yaml"
-_AGENT_JSON_FILE = _AGENTS_DIR / "vision" / "agent.json"
+_REGISTRY_FILE = _PROJECT_ROOT / "registry.yaml"
+_AGENT_JSON_FILE = _PROJECT_ROOT / "agent.json"
 
 
 def _load_pipeline_config() -> dict[str, Any]:
@@ -161,16 +167,16 @@ _VAULT_ROOT   = _PROJECT_ROOT / ".knowledge-base"
 _INBOX        = _VAULT_ROOT / "00-Inbox"
 _INBOX_IMAGES = _INBOX  # scan entire inbox, not just images/ subdir
 _PROCESSING   = _VAULT_ROOT / "01-Processing"
-_AGENT_STATE  = _AGENTS_DIR / "vision" / "state"
+_AGENT_STATE  = _PROJECT_ROOT / "state"
 _LOGS_DIR     = _AGENT_STATE / "logs"
-_SHARED_STATE = _PROJECT_ROOT / "system" / "state"
-_MASTER_LOG   = _AGENTS_DIR / "runtime" / "state" / "logs" / "automation.log"
+_SHARED_STATE = _PROJECT_ROOT / ".system" / "state"  # cross-agent bus, copied in alongside .system/src
+_MASTER_LOG   = _SHARED_STATE / "logs" / "automation.log"
 _PROC_IMAGES  = _AGENT_STATE / "processed-images.json"
 _TOKEN_LINKS  = _AGENT_STATE / "token-links.json"
 _QUEUE_FILE   = _SHARED_STATE / "inbox-queue.json"
-_GEN_TOKENS   = _PROJECT_ROOT / "system" / "state" / "workers" / "token" / "generated-tokens.json"
-_PROMPT_DIR   = _AGENTS_DIR / "vision" / "prompts"
-_SIGNALS_DIR  = _AGENTS_DIR / "runtime" / "state" / "signals"
+_GEN_TOKENS   = _SHARED_STATE / "workers" / "token" / "generated-tokens.json"
+_PROMPT_DIR   = _PACKAGE_DIR / "prompts"
+_SIGNALS_DIR  = _SHARED_STATE / "signals"
 
 # The 4 required classify_image_full steps, each its own single-purpose LLM
 # turn. "pf2e" has two variants - the branch is picked in code from step 1's
@@ -189,7 +195,7 @@ _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 # Types excluded from face-match candidate pool
 _EXCLUDE_TYPES = frozenset({"token", "battlemap", "scene"})
 
-# Model selectable via agents/registry.yaml -> llm_endpoints.vision_llm.model
+# Model selectable via ./registry.yaml -> llm_endpoints.vision_llm.model
 _FALLBACK_LLM_CFG = LLMEndpointConfig(
     url      = "http://localhost:1234/v1/chat/completions",
     model    = "qwen3-vl-4b-instruct",
@@ -201,7 +207,7 @@ _FALLBACK_LLM_CFG = LLMEndpointConfig(
 _LLM_CFG = load_llm_endpoint(
     "vision_llm",
     fallback     = _FALLBACK_LLM_CFG,
-    agent_dir    = _AGENTS_DIR / "vision",
+    agent_dir    = _PROJECT_ROOT,
     task_id      = TASK_ID,
     project_root = _PROJECT_ROOT,
 )
@@ -1553,8 +1559,14 @@ def main(*, retry_failed: bool = False) -> None:
     sys.exit(0 if failed == 0 else 1)
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """console_scripts entry point (see pyproject.toml) - forwards sys.argv,
+    same as running this file directly."""
     main(retry_failed="--retry-failed" in sys.argv[1:])
+
+
+if __name__ == "__main__":
+    cli()
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,17 @@
+# nc_vision_agent's own dependencies
 pyyaml
 pillow
 numpy
+
+# Transitive: required by nexus.shared, copied into system/ at deploy time
+# (not called directly by this agent, but nexus/shared/__init__.py imports
+# every submodule eagerly, so these must be importable). Kept in lockstep
+# with nexus's own pyproject.toml - bump both together.
+anthropic>=0.40,<1
+pydantic>=2.7,<3
+ruamel.yaml>=0.18,<0.19
+filelock>=3.14,<4
+requests>=2.31,<3
+deepface>=0.0.93
+tf-keras>=2.16
+python-slugify>=8.0,<9
