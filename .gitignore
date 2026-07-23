@@ -221,3 +221,7 @@ state/
 
 # Copied in from the monorepo at deploy/runtime - see install.py / CLAUDE.md
 .system/
+
+# Docker tmp files
+nul
+NUL
