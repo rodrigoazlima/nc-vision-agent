@@ -9,6 +9,7 @@ No LLM available → skip gracefully (no images marked failed). Batch: 10 per ru
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sys
 import time
@@ -22,6 +23,19 @@ import yaml
 _TOOLS_DIR    = Path(__file__).resolve().parent
 _PACKAGE_DIR  = _TOOLS_DIR.parent            # src/nc_vision_agent
 _PROJECT_ROOT = _TOOLS_DIR.parents[2]        # repo root (parent of src/)
+
+# Extensive DEBUG tracing, separate from Logger's automation.log summary
+# entries (info/warning/error/done) - this is per-call tracing for local
+# troubleshooting, not part of the cross-agent automation log contract.
+_DEBUG_LOG_FILE = _PROJECT_ROOT / "state" / "logs" / "classify-images-debug.log"
+_DEBUG_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stderr), logging.FileHandler(_DEBUG_LOG_FILE, encoding="utf-8")],
+)
+dlog = logging.getLogger("nc-vision-classify")
 
 # The nexus.shared library is not vendored - it's copied into .system/ at
 # deploy/runtime (see install.py, which validates it's present + compatible
@@ -229,6 +243,7 @@ _sha256 = sha256_of_file
 def _is_token(path: Path) -> bool:
     """Return True if PNG has ≥2 transparent corners - canonical token detection."""
     if path.suffix.lower() != ".png":
+        dlog.debug("_is_token: %s not a PNG - False", path.name)
         return False
     try:
         from PIL import Image
@@ -240,8 +255,12 @@ def _is_token(path: Path) -> bool:
             img.getpixel((0, h - 1)),
             img.getpixel((w - 1, h - 1)),
         ]
-        return sum(1 for c in corners if c[3] < 128) >= 2
-    except Exception:
+        transparent = sum(1 for c in corners if c[3] < 128)
+        result = transparent >= 2
+        dlog.debug("_is_token: %s size=%sx%s transparent_corners=%d -> %s", path.name, w, h, transparent, result)
+        return result
+    except Exception as exc:
+        dlog.debug("_is_token: %s failed to inspect: %r", path.name, exc)
         return False
 
 
@@ -251,15 +270,20 @@ def _is_token(path: Path) -> bool:
 
 def _load_state() -> dict[str, Any]:
     if not _PROC_IMAGES.exists():
+        dlog.debug("_load_state: %s missing - starting fresh", _PROC_IMAGES)
         return {"version": 2, "images": {}, "pathIndex": {}}
-    return json.loads(_PROC_IMAGES.read_text(encoding="utf-8"))
+    state = json.loads(_PROC_IMAGES.read_text(encoding="utf-8"))
+    dlog.debug("_load_state: loaded %d image(s), %d pathIndex entr(y/ies)", len(state.get("images", {})), len(state.get("pathIndex", {})))
+    return state
 
 
 def _save_state(state: dict) -> None:
+    dlog.debug("_save_state: writing %d image(s), %d pathIndex entr(y/ies)", len(state.get("images", {})), len(state.get("pathIndex", {})))
     _AGENT_STATE.mkdir(parents=True, exist_ok=True)
     tmp = _PROC_IMAGES.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
     tmp.replace(_PROC_IMAGES)
+    dlog.debug("_save_state: %s written", _PROC_IMAGES)
 
 
 def retry_failed_images(state: dict) -> int:
@@ -276,6 +300,7 @@ def retry_failed_images(state: dict) -> int:
         and isinstance(images.get(key), dict)
         and images[key].get("status") == "failed"
     }
+    dlog.debug("retry_failed_images: clearing %d failed entr(y/ies): %s", len(failed_paths), sorted(failed_paths))
     for rel in failed_paths:
         key = path_index.pop(rel)
         images.pop(key, None)
@@ -284,11 +309,15 @@ def retry_failed_images(state: dict) -> int:
 
 def _load_token_links() -> dict[str, Any]:
     if not _TOKEN_LINKS.exists():
+        dlog.debug("_load_token_links: %s missing - returning {}", _TOKEN_LINKS)
         return {}
-    return json.loads(_TOKEN_LINKS.read_text(encoding="utf-8"))
+    links = json.loads(_TOKEN_LINKS.read_text(encoding="utf-8"))
+    dlog.debug("_load_token_links: loaded %d link(s)", len(links))
+    return links
 
 
 def _save_token_links(links: dict) -> None:
+    dlog.debug("_save_token_links: writing %d link(s)", len(links))
     _AGENT_STATE.mkdir(parents=True, exist_ok=True)
     tmp = _TOKEN_LINKS.with_suffix(".tmp")
     tmp.write_text(json.dumps(links, indent=2, default=str), encoding="utf-8")
@@ -297,8 +326,11 @@ def _save_token_links(links: dict) -> None:
 
 def _load_queue() -> dict[str, Any]:
     if not _QUEUE_FILE.exists():
+        dlog.debug("_load_queue: %s missing - returning {}", _QUEUE_FILE)
         return {}
-    return json.loads(_QUEUE_FILE.read_text(encoding="utf-8"))
+    queue = json.loads(_QUEUE_FILE.read_text(encoding="utf-8"))
+    dlog.debug("_load_queue: loaded %d entr(y/ies)", len(queue))
+    return queue
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +346,16 @@ def _generated_token_paths() -> set[str]:
     -01, -02…). Skip them here so they are never treated as source images.
     """
     if not _GEN_TOKENS.exists():
+        dlog.debug("_generated_token_paths: %s missing - returning set()", _GEN_TOKENS)
         return set()
     try:
         gen = json.loads(_GEN_TOKENS.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        dlog.debug("_generated_token_paths: failed to parse %s: %r", _GEN_TOKENS, exc)
         return set()
-    return {v["tokenPath"] for v in gen.values() if isinstance(v, dict) and v.get("tokenPath")}
+    paths = {v["tokenPath"] for v in gen.values() if isinstance(v, dict) and v.get("tokenPath")}
+    dlog.debug("_generated_token_paths: %d generated token path(s)", len(paths))
+    return paths
 
 
 def _is_token_file(path: Path) -> bool:
@@ -339,7 +375,9 @@ def _is_token_file(path: Path) -> bool:
     catches those orphans regardless of index state.
     """
     stem = path.stem
-    return stem.endswith("-token") or ".token" in stem
+    result = stem.endswith("-token") or ".token" in stem
+    dlog.debug("_is_token_file: %s -> %s", path.name, result)
+    return result
 
 
 def _candidate_images(state: dict, queue: dict) -> list[Path]:
@@ -347,21 +385,28 @@ def _candidate_images(state: dict, queue: dict) -> list[Path]:
     path_index: set[str] = set(state.get("pathIndex", {}).keys())
     gen_tokens: set[str] = _generated_token_paths()
     images: list[Path] = []
+    scanned = 0
     for path in sorted(_INBOX_IMAGES.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in _IMAGE_EXTS:
             continue
+        scanned += 1
         rel = path.relative_to(_PROJECT_ROOT).as_posix()
         if rel in path_index:
             continue
         if rel in gen_tokens:
+            dlog.debug("_candidate_images: skip %s - generated token path", rel)
             continue
         if _is_token_file(path):
+            dlog.debug("_candidate_images: skip %s - token filename convention", rel)
             continue
         agents = queue.get(rel, {}).get("agents", {})
         if isinstance(agents, dict) and agents.get("vision") in ("done", "paused"):
+            dlog.debug("_candidate_images: skip %s - queue agents.vision=%s", rel, agents.get("vision"))
             continue
         images.append(path)
-    return sorted(images, key=lambda p: (p.suffix.lower() == ".png", p))
+    result = sorted(images, key=lambda p: (p.suffix.lower() == ".png", p))
+    dlog.debug("_candidate_images: %d image file(s) scanned, %d candidate(s) selected", scanned, len(result))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +441,7 @@ def _get_folder_candidates(folder: Path, state: dict) -> list[Path]:
         if path.exists():
             candidates.append(path)
 
+    dlog.debug("_get_folder_candidates: folder=%s -> %d candidate(s)", folder, len(candidates))
     return candidates
 
 
@@ -407,12 +453,14 @@ def _try_face_match(token_path: Path, candidates: list[Path]) -> Optional[Path]:
     Returns the best match above _FACE_SIMILARITY_THRESHOLD, or None.
     """
     if not candidates:
+        dlog.debug("_try_face_match: no candidates for %s", token_path.name)
         return None
 
     try:
         import numpy as np
         from PIL import Image
-    except ImportError:
+    except ImportError as exc:
+        dlog.debug("_try_face_match: numpy/PIL unavailable: %r", exc)
         return None
 
     def _face_vector(path: Path) -> Optional[Any]:
@@ -426,11 +474,13 @@ def _try_face_match(token_path: Path, candidates: list[Path]) -> Optional[Path]:
             vec  = np.array(crop, dtype=np.float32).flatten()
             norm = np.linalg.norm(vec)
             return vec / norm if norm > 0 else None
-        except Exception:
+        except Exception as exc:
+            dlog.debug("_try_face_match: _face_vector failed for %s: %r", path.name, exc)
             return None
 
     token_vec = _face_vector(token_path)
     if token_vec is None:
+        dlog.debug("_try_face_match: could not vectorize token %s", token_path.name)
         return None
 
     best_path:  Optional[Path] = None
@@ -441,11 +491,18 @@ def _try_face_match(token_path: Path, candidates: list[Path]) -> Optional[Path]:
         if cand_vec is None:
             continue
         score = float((token_vec * cand_vec).sum())  # cosine sim (vecs are unit-norm)
+        dlog.debug("_try_face_match: %s vs %s score=%.4f", token_path.name, cand.name, score)
         if score > best_score:
             best_score = score
             best_path  = cand
 
-    return best_path if best_score >= _FACE_SIMILARITY_THRESHOLD else None
+    result = best_path if best_score >= _FACE_SIMILARITY_THRESHOLD else None
+    dlog.debug(
+        "_try_face_match: best=%s score=%.4f threshold=%.4f -> %s",
+        best_path.name if best_path else None, best_score, _FACE_SIMILARITY_THRESHOLD,
+        result.name if result else None,
+    )
+    return result
 
 
 def _inherit_clf_from_state(entry: dict) -> VisionClassification:
@@ -559,11 +616,13 @@ def _resolve_image_target(src: Path, img_slug: str) -> Path:
     ext    = src.suffix.lower()
     target = src.parent / f"{img_slug}{ext}"
     if not target.exists() or target == src:
+        dlog.debug("_resolve_image_target: %s -> %s (no collision)", src.name, target.name)
         return target
     counter = 1
     while True:
         target = src.parent / f"{img_slug}-{counter:02d}{ext}"
         if not target.exists():
+            dlog.debug("_resolve_image_target: %s -> %s (collision, bumped to %02d)", src.name, target.name, counter)
             return target
         counter += 1
 
@@ -573,11 +632,13 @@ def _resolve_entity_path(slug: str) -> Path:
     _PROCESSING.mkdir(parents=True, exist_ok=True)
     candidate = _PROCESSING / f"{slug}.md"
     if not candidate.exists():
+        dlog.debug("_resolve_entity_path: slug=%r -> %s (no collision)", slug, candidate.name)
         return candidate
     counter = 1
     while True:
         candidate = _PROCESSING / f"{slug}-{counter:02d}.md"
         if not candidate.exists():
+            dlog.debug("_resolve_entity_path: slug=%r -> %s (collision, bumped to %02d)", slug, candidate.name, counter)
             return candidate
         counter += 1
 
@@ -590,8 +651,10 @@ def _rename_image(src: Path, clf: VisionClassification) -> Path:
     """Rename image to canonical slug format in-place. Returns new path."""
     img_slug = _image_filename_slug(clf)
     target   = _resolve_image_target(src, img_slug)
+    dlog.debug("_rename_image: %s -> %s (slug=%r)", src.name, target.name, img_slug)
     if target != src:
         src.rename(target)
+        dlog.debug("_rename_image: renamed on disk")
     return target
 
 
@@ -911,6 +974,7 @@ def _write_draft(
     processed-images.json, so the note (dashboard URL) and the state ledger
     agree on one identifier instead of each minting their own.
     """
+    dlog.debug("_write_draft: path=%s image_path=%s sha256=%s entity_uuid=%s", path.name, image_path.name, sha256, entity_uuid)
     today   = date.today().isoformat()
     slug    = path.stem
     rel_img = image_path.relative_to(_PROJECT_ROOT).as_posix()
@@ -970,7 +1034,9 @@ def _write_draft(
     else:
         body = _portrait_body(clf)
 
+    dlog.debug("_write_draft: entity_type=%r image_type=%r tags=%r", entity_type, t, tags)
     FrontmatterIO().write(path, frontmatter, body)
+    dlog.debug("_write_draft: wrote %s", path)
     return entity_type
 
 
@@ -1020,8 +1086,11 @@ def _extract_candidate_tags(raw: dict) -> list[str]:
                 norm = item.strip().lower()
                 if norm and _is_concrete_tag(norm):
                     seen.setdefault(norm, None)
-        return list(seen)
-    except Exception:
+        result = list(seen)
+        dlog.debug("_extract_candidate_tags: harvested %d tag(s): %r", len(result), result)
+        return result
+    except Exception as exc:
+        dlog.debug("_extract_candidate_tags: failed: %r", exc)
         return []
 
 
@@ -1045,15 +1114,21 @@ def _parse_json_response(raw: str) -> dict:
     text = raw.strip()
     m = _JSON_FENCE_RE.match(text)
     if m:
+        dlog.debug("_parse_json_response: stripped markdown code fence")
         text = m.group(1).strip()
-    return json.loads(text)
+    parsed = json.loads(text)
+    dlog.debug("_parse_json_response: parsed keys=%r", list(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__)
+    return parsed
 
 
 def _read_tag_library() -> dict[str, Any]:
     """Read-only view of classification agent's canonical tag library."""
     try:
-        return json.loads(_CLASSIFICATION_TAG_LIBRARY.read_text(encoding="utf-8"))
-    except Exception:
+        library = json.loads(_CLASSIFICATION_TAG_LIBRARY.read_text(encoding="utf-8"))
+        dlog.debug("_read_tag_library: loaded %d known tag(s)", len(library.get("tags", {})))
+        return library
+    except Exception as exc:
+        dlog.debug("_read_tag_library: falling back to empty library: %r", exc)
         return {"tags": {}}
 
 
@@ -1069,7 +1144,9 @@ def _load_step_prompts() -> dict[str, str]:
     prompts: dict[str, str] = {}
     for key, filename in _STEP_PROMPT_FILES.items():
         p = _PROMPT_DIR / filename
-        prompts[key] = p.read_text(encoding="utf-8") if p.exists() else ""
+        exists = p.exists()
+        prompts[key] = p.read_text(encoding="utf-8") if exists else ""
+        dlog.debug("_load_step_prompts: %s (%s) exists=%s len=%d", key, filename, exists, len(prompts[key]))
     return prompts
 
 
@@ -1134,6 +1211,7 @@ def refine_tags_with_library(
         key=lambda t: -library["tags"][t].get("count", 0),
     )[:20]
     prompt_text = _cycle4_prompt(current_tags, known_tags, entity_type_hint)
+    dlog.debug("refine_tags_with_library: current_tags=%r known_tags=%r entity_type_hint=%r", current_tags, known_tags, entity_type_hint)
 
     if history is not None:
         messages = history
@@ -1147,11 +1225,13 @@ def refine_tags_with_library(
     if len(messages) + 1 > _MAX_CONVERSATION_MESSAGES:
         # Over budget even before this turn's reply - accept what we have
         # rather than exceed the message cap.
+        dlog.debug("refine_tags_with_library: over message budget - skipping cycle, keeping current values")
         return current_tags, entity_type_hint
 
     final_tags, entity_type = current_tags, entity_type_hint
     try:
         raw_text = client.chat(messages, max_tokens=_FOLLOWUP_MAX_TOKENS)
+        dlog.debug("refine_tags_with_library: raw response: %s", raw_text[:500])
         messages.append({"role": "assistant", "content": raw_text})
         resp = _parse_json_response(raw_text)
         candidate = resp.get("final_tags")
@@ -1168,12 +1248,16 @@ def refine_tags_with_library(
                     if norm not in merged and _is_concrete_tag(norm):
                         merged.append(norm)
             final_tags = merged
+            dlog.debug("refine_tags_with_library: merged tags -> %r", final_tags)
         et = resp.get("entity_type")
         if isinstance(et, str) and et in _ENTITY_TYPES:
             entity_type = et
+            dlog.debug("refine_tags_with_library: entity_type confirmed -> %r", entity_type)
     except LLMOfflineError:
+        dlog.debug("refine_tags_with_library: LLM offline - propagating")
         raise
-    except Exception:
+    except Exception as exc:
+        dlog.debug("refine_tags_with_library: degrading gracefully after %r", exc)
         pass  # graceful degrade - keep current_tags/entity_type_hint as-is
 
     return final_tags, entity_type
@@ -1216,24 +1300,31 @@ def _run_required_step(
     """
     messages.append({"role": "user", "content": content})
     last_err: Optional[Exception] = None
+    dlog.debug("_run_required_step: starting, max_tokens=%d, messages_so_far=%d", max_tokens, len(messages))
     for attempt in range(_STEP_MAX_RETRIES + 1):
         if len(messages) + 1 > _MAX_CONVERSATION_MESSAGES:
+            dlog.debug("_run_required_step: message budget exhausted (%d/%d)", len(messages) + 1, _MAX_CONVERSATION_MESSAGES)
             raise LLMResponseError(
                 f"message budget ({_MAX_CONVERSATION_MESSAGES}) exhausted before a required step completed"
             )
+        dlog.debug("_run_required_step: attempt %d/%d", attempt + 1, _STEP_MAX_RETRIES + 1)
         try:
             raw_text = client.chat(messages, max_tokens=max_tokens)
+            dlog.debug("_run_required_step: raw response (%d char(s)): %s", len(raw_text), raw_text[:500])
             messages.append({"role": "assistant", "content": raw_text})
             parsed = _parse_json_response(raw_text)
             if not isinstance(parsed, dict):
                 raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
             if validate is not None:
                 validate(parsed)
+            dlog.debug("_run_required_step: succeeded on attempt %d", attempt + 1)
             return parsed
         except LLMOfflineError:
+            dlog.debug("_run_required_step: LLM offline - propagating immediately")
             raise
         except Exception as exc:
             last_err = exc
+            dlog.debug("_run_required_step: attempt %d failed: %r", attempt + 1, exc)
             if attempt < _STEP_MAX_RETRIES:
                 time.sleep(_STEP_RETRY_BACKOFF_S)
                 messages.append({
@@ -1241,6 +1332,7 @@ def _run_required_step(
                     "content": "That was not valid JSON, or was missing a required field. "
                                 "Return ONLY valid JSON matching the requested schema.",
                 })
+    dlog.debug("_run_required_step: exhausted %d attempt(s), last_err=%r", _STEP_MAX_RETRIES + 1, last_err)
     raise LLMResponseError(
         f"required step never returned valid JSON after {_STEP_MAX_RETRIES + 1} attempt(s): {last_err}"
     )
@@ -1272,6 +1364,7 @@ def classify_image_full(
     retries. Optional cycles keep prior values on parse/format errors, but
     propagate LLMOfflineError so main() can retry the model swap once.
     """
+    dlog.debug("classify_image_full: img_path=%s is_tk=%s", img_path.name, is_tk)
     step_prompts = step_prompts or _load_step_prompts()
     messages: list[dict] = [{"role": "system", "content": _VISION_SYSTEM_PROMPT}]
 
@@ -1281,25 +1374,30 @@ def classify_image_full(
         [_image_content_block(img_path), {"type": "text", "text": step_prompts.get("type", "")}],
         _STEP_MAX_TOKENS["type"], validate=_validate_step1,
     )
+    dlog.debug("classify_image_full: step1 type=%r", step1.get("type"))
 
     # --- Step 2: visual analysis ---
     step2 = _run_required_step(
         messages, client, step_prompts.get("visual", ""), _STEP_MAX_TOKENS["visual"], validate=_validate_step2,
     )
+    dlog.debug("classify_image_full: step2 visual_analysis keys=%r", list((step2.get("visual_analysis") or {}).keys()))
 
     # --- Step 3: PF2e classification - branch decided from step 1's type ---
     is_character = step1["type"] in ("portrait", "body")
+    dlog.debug("classify_image_full: step3 branch=%s", "pf2e_character" if is_character else "pf2e_environment")
     step3 = _run_required_step(
         messages, client,
         step_prompts.get("pf2e_character" if is_character else "pf2e_environment", ""),
         _STEP_MAX_TOKENS["pf2e"],
     )
+    dlog.debug("classify_image_full: step3 result=%r", step3)
 
     # --- Step 4: flavor description ---
     step4 = _run_required_step(
         messages, client, step_prompts.get("description", ""), _STEP_MAX_TOKENS["description"],
         validate=_validate_step4,
     )
+    dlog.debug("classify_image_full: step4 description len=%d", len(step4.get("description", "")))
 
     raw: dict[str, Any] = {
         "type":           step1["type"],
@@ -1315,6 +1413,7 @@ def classify_image_full(
     if is_tk:
         clf = clf.model_copy(update={"type": ImageType.token})
     tags: list[str] = list(dict.fromkeys(_extract_candidate_tags(raw)))
+    dlog.debug("classify_image_full: initial clf.type=%r tags=%r", clf.type.value, tags)
 
     # --- Cycle 2: image type + more tags ---
     try:
@@ -1325,14 +1424,17 @@ def classify_image_full(
         cat = resp.get("category")
         if not is_tk and isinstance(cat, str) and cat in {"portrait", "body", "battlemap", "scene", "token"}:
             clf = clf.model_copy(update={"type": ImageType(cat)})
+            dlog.debug("classify_image_full: cycle2 confirmed type -> %r", cat)
         for t in resp.get("additional_tags") or []:
             if isinstance(t, str) and t.strip():
                 norm = t.strip().lower()
                 if norm not in tags and _is_concrete_tag(norm):
                     tags.append(norm)
+        dlog.debug("classify_image_full: cycle2 tags now %r", tags)
     except LLMOfflineError:
         raise
-    except Exception:
+    except Exception as exc:
+        dlog.debug("classify_image_full: cycle2 degraded gracefully after %r", exc)
         pass  # keep the required steps' type/tags - never fail the image over this
 
     # --- Cycle 3: entity type + more tags ---
@@ -1345,20 +1447,24 @@ def classify_image_full(
         et = resp.get("entity_type")
         if isinstance(et, str) and et in _ENTITY_TYPES:
             entity_type = et
+            dlog.debug("classify_image_full: cycle3 entity_type -> %r", entity_type)
         for t in resp.get("additional_tags") or []:
             if isinstance(t, str) and t.strip():
                 norm = t.strip().lower()
                 if norm not in tags and _is_concrete_tag(norm):
                     tags.append(norm)
+        dlog.debug("classify_image_full: cycle3 tags now %r", tags)
     except LLMOfflineError:
         raise
-    except Exception:
+    except Exception as exc:
+        dlog.debug("classify_image_full: cycle3 degraded gracefully after %r", exc)
         pass
 
     # --- Cycle 4: tag-library refinement (in-conversation) ---
     final_tags, entity_type = refine_tags_with_library(
         img_path, client, tags, entity_type, _read_tag_library(), history=messages,
     )
+    dlog.debug("classify_image_full: final type=%r entity_type=%r tags=%r", clf.type.value, entity_type, final_tags)
 
     return clf.model_copy(update={"candidate_tags": final_tags, "entity_type": entity_type})
 
@@ -1368,6 +1474,7 @@ def classify_image_full(
 # ---------------------------------------------------------------------------
 
 def main(*, retry_failed: bool = False) -> None:
+    dlog.debug("main: starting, retry_failed=%s", retry_failed)
     log = Logger(
         task_id=TASK_ID,
         script_basename=SCRIPT_BASENAME,
@@ -1381,6 +1488,7 @@ def main(*, retry_failed: bool = False) -> None:
 
     client = LLMClient(_LLM_CFG)
     if not client.is_available():
+        dlog.debug("main: LLM unavailable at %s", _LLM_CFG.url)
         log.warning("Qwen3-VL (localhost:1234) offline - skipping batch")
         log.done(t0, key="classified", count=0, failed=0)
         sys.exit(0)
@@ -1395,6 +1503,7 @@ def main(*, retry_failed: bool = False) -> None:
     token_links = _load_token_links()
     queue       = _load_queue()
     candidates  = _candidate_images(state, queue)
+    dlog.debug("main: %d candidate(s) found", len(candidates))
 
     if not candidates:
         log.info("No unprocessed images found")
@@ -1406,11 +1515,13 @@ def main(*, retry_failed: bool = False) -> None:
     failed  = 0
     emitter = SignalEmitter(_SIGNALS_DIR)
     log.info(f"Batch: {len(batch)} of {len(candidates)} image(s)")
+    dlog.debug("main: batch size=%d (of %d candidates, BATCH_SIZE=%d)", len(batch), len(candidates), BATCH_SIZE)
 
     for img_path in batch:
         orig_img_path = img_path  # pre-rename Path - _rename_image reassigns img_path below
         orig_rel = img_path.relative_to(_PROJECT_ROOT).as_posix()
         is_tk    = _is_token(img_path)
+        dlog.debug("main: --- processing %s (is_token=%s) ---", orig_rel, is_tk)
 
         # --- Classification: face match for tokens, LLM for everything else ---
         clf: Optional[VisionClassification] = None
@@ -1432,6 +1543,7 @@ def main(*, retry_failed: bool = False) -> None:
                         )
 
         if clf is None:
+            dlog.debug("main: no face-match inherited - calling classify_image_full for %s", img_path.name)
             try:
                 clf = classify_image_full(img_path, client, step_prompts, is_tk)
             except LLMOfflineError:
@@ -1439,14 +1551,17 @@ def main(*, retry_failed: bool = False) -> None:
                 # concurrent request for another model briefly evicts this
                 # one. One retry after a short wait rides out that swap
                 # instead of aborting the whole batch.
+                dlog.debug("main: LLM offline for %s - retrying once after 10s", img_path.name)
                 log.warning(f"LLM offline while processing {img_path.name} - retrying once")
                 time.sleep(10)
                 try:
                     clf = classify_image_full(img_path, client, step_prompts, is_tk)
                 except LLMOfflineError:
+                    dlog.debug("main: LLM still offline for %s - aborting batch", img_path.name)
                     log.warning(f"LLM still offline for {img_path.name} - aborting batch")
                     break
             except (LLMResponseError, Exception) as exc:
+                dlog.debug("main: classification exception for %s: %r", img_path.name, exc)
                 sha_fail  = _sha256(img_path)
                 fail_uuid = str(_uuid.uuid4())
                 log.error(f"Classification failed for {img_path.name}: {exc}{image_tag(sha256=sha_fail, uuid=fail_uuid, path=orig_rel)}")
@@ -1476,6 +1591,7 @@ def main(*, retry_failed: bool = False) -> None:
         try:
             img_path = _rename_image(img_path, clf)
         except Exception as exc:
+            dlog.debug("main: rename failed for %s: %r", img_path.name, exc)
             log.warning(f"Could not rename {img_path.name}: {exc} - using original path{image_tag(path=orig_rel)}")
 
         new_rel = img_path.relative_to(_PROJECT_ROOT).as_posix()
@@ -1485,6 +1601,7 @@ def main(*, retry_failed: bool = False) -> None:
         # second one - the note frontmatter and processed-images.json must
         # agree on a single identifier for the same image.
         entity_uuid = state.get("images", {}).get(sha, {}).get("uuid") or str(_uuid.uuid4())
+        dlog.debug("main: sha=%s entity_uuid=%s new_rel=%s", sha[:12], entity_uuid, new_rel)
 
         # --- Write draft (step 7) ---
         e_slug   = _entity_slug(clf)
@@ -1521,6 +1638,7 @@ def main(*, retry_failed: bool = False) -> None:
         }
         state["pathIndex"][new_rel] = sha
         _save_state(state)
+        dlog.debug("main: state updated for sha=%s", sha[:12])
 
         # --- Track face-match link in token-links.json ---
         if is_tk and matched_source is not None:
@@ -1555,6 +1673,7 @@ def main(*, retry_failed: bool = False) -> None:
 
         count += 1
 
+    dlog.debug("main: batch complete - count=%d failed=%d", count, failed)
     log.done(t0, key="classified", count=count, failed=failed)
     sys.exit(0 if failed == 0 else 1)
 
@@ -1653,10 +1772,12 @@ def call_tool(name: str, args: dict, context: dict) -> str:
     import contextlib
     import json as _json
 
+    dlog.debug("call_tool: name=%r args=%r", name, args)
     result = call_self_management_tool(
         name, args, context, module_file=_MODULE_FILE, task_id=TASK_ID
     )
     if result is not None:
+        dlog.debug("call_tool: %r handled by self-management dispatch", name)
         return result
 
     if name == "list_pending_images":
@@ -1709,6 +1830,8 @@ def call_tool(name: str, args: dict, context: dict) -> str:
                 main()
         except SystemExit:
             pass
+        dlog.debug("call_tool: run_batch complete")
         return buf.getvalue().strip() or "Batch run complete"
 
+    dlog.debug("call_tool: unknown tool %r", name)
     raise ValueError(f"Unknown tool: {name!r}")

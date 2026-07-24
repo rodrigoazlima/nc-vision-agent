@@ -25,6 +25,8 @@ _INBOX       = _ROOT / ".knowledge-base" / "00-Inbox" / "webui-uploads"
 _PROCESSING  = _ROOT / ".knowledge-base" / "01-Processing"
 _STATE_FILE  = _ROOT / "state" / "processed-images.json"
 _RUN_SCRIPT  = _ROOT / "run.py"
+_CLASSIFY_SCRIPT = _ROOT / "src" / "nc_vision_agent" / "tools" / "classify_images.py"
+_EXTRACT_SCRIPT  = _ROOT / "src" / "nc_vision_agent" / "tools" / "extract_text.py"
 _STATIC_DIR  = Path(__file__).resolve().parent / "static"
 _LOG_FILE    = _ROOT / "state" / "logs" / "webui.log"  # same state/logs/ convention as classify_images.py's Logger
 _PORT        = 8765
@@ -49,7 +51,9 @@ _RUN_LOCK = threading.Lock()
 def _unique_path(directory: Path, filename: str) -> Path:
     """Same-name upload twice → suffix -1, -2, ... instead of clobbering."""
     directory.mkdir(parents=True, exist_ok=True)
-    candidate = directory / filename
+    # Browser file names are normally bare names, but do not let a crafted API
+    # request escape the upload container.
+    candidate = directory / (Path(filename).name or "upload")
     stem, suffix = candidate.stem, candidate.suffix
     n = 1
     while candidate.exists():
@@ -80,17 +84,109 @@ def _find_draft_by_sha(sha: str) -> Optional[Path]:
     return None
 
 
-def _run_agent() -> tuple[int, str, str]:
-    log.debug("agent subprocess: launching %s %s", sys.executable, _RUN_SCRIPT)
+def _run_command(command: list[str], *, input_text: Optional[str] = None) -> tuple[int, str, str]:
+    """Run one agent action and retain its stdout/stderr for the webview."""
+    log.debug("agent subprocess: launching %s", command)
     t0 = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, str(_RUN_SCRIPT)],
-        cwd=_ROOT, capture_output=True, text=True, timeout=900,
+        command, cwd=_ROOT, input=input_text, capture_output=True, text=True, timeout=900,
     )
     log.info("agent subprocess: exit=%s elapsed=%.1fs", proc.returncode, time.monotonic() - t0)
     if proc.stderr.strip():
         log.debug("agent stderr tail: %s", proc.stderr.strip()[-1000:])
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _run_agent(*args: str) -> tuple[int, str, str]:
+    return _run_command([sys.executable, str(_RUN_SCRIPT), *args])
+
+
+def _save_upload(filename: str, raw: bytes, state: Optional[dict] = None) -> tuple[str, Path, str]:
+    """Save a browser-selected image in its stable agent container."""
+    sha = hashlib.sha256(raw).hexdigest()
+    state = state if state is not None else (
+        json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
+    )
+    container = _container_name(sha, state)
+    dest = _unique_path(_INBOX / container, filename)
+    dest.write_bytes(raw)
+    log.debug("saved webview upload to %s", dest.relative_to(_ROOT))
+    return sha, dest, container
+
+
+def _run_tool(module: str, name: str, args: dict) -> tuple[int, str, str]:
+    """Invoke an agent's public `call_tool` action without a shell command.
+
+    The JSON is sent over stdin so an image path never becomes executable code.
+    """
+    program = (
+        "import json, sys; "
+        "from importlib import import_module; "
+        "request = json.load(sys.stdin); "
+        "print(import_module(request['module']).call_tool(request['name'], request['args'], {}))"
+    )
+    request = json.dumps({"module": module, "name": name, "args": args})
+    return _run_command([sys.executable, "-c", program], input_text=request)
+
+
+_ACTIONS = {
+    "list_pending_images": {
+        "label": "List pending images", "module": "nc_vision_agent.tools.classify_images", "tool": "list_pending_images",
+    },
+    "detect_token": {
+        "label": "Detect token", "module": "nc_vision_agent.tools.classify_images", "tool": "detect_token", "needs_image": True,
+    },
+    "match_token_face": {
+        "label": "Match token face", "module": "nc_vision_agent.tools.classify_images", "tool": "match_token_face", "needs_image": True,
+    },
+    "classify_image": {
+        "label": "Classify image (preview)", "module": "nc_vision_agent.tools.classify_images", "tool": "classify_image", "needs_image": True,
+    },
+    "run_classification_batch": {"label": "Run classification batch", "command": [sys.executable, str(_RUN_SCRIPT)]},
+    "retry_failed": {"label": "Retry failed classifications", "command": [sys.executable, str(_RUN_SCRIPT), "--retry-failed"]},
+    "extract_image_text": {
+        "label": "Extract image text (preview)", "module": "nc_vision_agent.tools.extract_text", "tool": "extract_image_text", "needs_image": True,
+    },
+    "run_text_extraction_batch": {"label": "Run text extraction batch", "command": [sys.executable, str(_EXTRACT_SCRIPT)]},
+    "backfill_short_drafts": {"label": "Backfill short drafts", "command": [sys.executable, "-m", "nc_vision_agent.tools.backfill_short_drafts"]},
+}
+
+
+def _perform_action(action: str, filename: Optional[str] = None, raw: Optional[bytes] = None) -> dict:
+    spec = _ACTIONS.get(action)
+    if spec is None:
+        return {"ok": False, "error": f"Unknown action: {action}"}
+
+    image_path: Optional[Path] = None
+    container: Optional[str] = None
+    if spec.get("needs_image"):
+        if not filename or raw is None:
+            return {"ok": False, "error": "Choose an image before running this action."}
+        _sha, image_path, container = _save_upload(filename, raw)
+
+    try:
+        if "command" in spec:
+            rc, stdout, stderr = _run_command(spec["command"])
+        else:
+            rc, stdout, stderr = _run_tool(
+                spec["module"], spec["tool"], {"image_path": str(image_path)} if image_path else {}
+            )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Action timed out after 15 minutes."}
+    except Exception as exc:
+        log.exception("action %s failed", action)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    output = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()
+    return {
+        "ok": rc == 0,
+        "action": action,
+        "label": spec["label"],
+        "container": container,
+        "imagePath": str(image_path.relative_to(_ROOT)) if image_path else None,
+        "output": output or "Action completed with no output.",
+        "returncode": rc,
+    }
 
 
 def _classify(filename: str, raw: bytes) -> dict:
@@ -103,10 +199,7 @@ def _classify(filename: str, raw: bytes) -> dict:
     with _RUN_LOCK:
         log.debug("classify: run-lock acquired")
         pre_state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
-        container = _container_name(sha, pre_state)
-        dest = _unique_path(_INBOX / container, filename)
-        dest.write_bytes(raw)
-        log.debug("classify: wrote upload to %s", dest.relative_to(_ROOT))
+        _saved_sha, dest, container = _save_upload(filename, raw, pre_state)
 
         _returncode, stdout, stderr = _run_agent()
         log_tail = (stdout + "\n" + stderr).strip()[-4000:]
@@ -174,13 +267,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path != "/api/classify":
+        if self.path not in ("/api/classify", "/api/actions"):
             self.send_error(404)
             return
         try:
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length))
-            result = _classify(payload["filename"], base64.b64decode(payload["data"]))
+            if self.path == "/api/classify":
+                result = _classify(payload["filename"], base64.b64decode(payload["data"], validate=True))
+            else:
+                raw = base64.b64decode(payload["data"], validate=True) if payload.get("data") else None
+                result = _perform_action(payload.get("action", ""), payload.get("filename"), raw)
             self._send_json(result)
         except Exception as exc:
             log.exception("do_POST: unhandled error")
