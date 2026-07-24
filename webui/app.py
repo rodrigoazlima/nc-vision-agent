@@ -3,7 +3,9 @@
 Upload an image, run the agent (run.py) against it, show the result. Stdlib
 only - no new dependency for one form + one endpoint.
 
-Usage: python webui/app.py   (serves http://127.0.0.1:8765)
+Usage: python webui/app.py            (serves http://127.0.0.1:8765)
+       python webui/app.py --reload   (restarts the server whenever app.py
+                                        or webui/static/ change - dev only)
 """
 
 from __future__ import annotations
@@ -99,9 +101,19 @@ def _run_agent(*args: str) -> tuple[int, str, str]:
     return _run_command([sys.executable, str(_RUN_SCRIPT), *args])
 
 
+def _content_key(raw: bytes) -> str:
+    """Hash used to key state["images"] and pathIndex - MUST match
+    classify_images.py's `_sha256`/nexus.shared.hashing.sha256_of_file, which
+    despite its name is blake2b(digest_size=32), not real SHA-256 (kept for
+    on-disk field compatibility - see that module's docstring). Using
+    hashlib.sha256 here instead would silently never match any key the agent
+    writes, making every classify request report false failure."""
+    return hashlib.blake2b(raw, digest_size=32).hexdigest()
+
+
 def _save_upload(filename: str, raw: bytes, state: Optional[dict] = None) -> tuple[str, Path, str]:
     """Save a browser-selected image in its stable agent container."""
-    sha = hashlib.sha256(raw).hexdigest()
+    sha = _content_key(raw)
     state = state if state is not None else (
         json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
     )
@@ -188,8 +200,8 @@ def _perform_action(action: str, filename: Optional[str] = None, raw: Optional[b
 
 
 def _classify(filename: str, raw: bytes) -> dict:
-    sha = hashlib.sha256(raw).hexdigest()
-    log.info("classify: filename=%r size=%dB sha=%s", filename, len(raw), sha[:12])
+    sha = _content_key(raw)
+    log.info("classify: filename=%r size=%dB key=%s", filename, len(raw), sha[:12])
 
     if _RUN_LOCK.locked():
         log.info("classify: waiting on run-lock (another classification is in progress)")
@@ -207,7 +219,39 @@ def _classify(filename: str, raw: bytes) -> dict:
 
     entry = (state.get("images") or {}).get(sha)
     if entry is None:
-        log.warning("classify: no state entry for sha=%s after run - reporting failure", sha[:12])
+        # Distinguish *why* no entry exists instead of one blanket guess -
+        # each of these used to look identical from the webui alone.
+        dest_rel = dest.relative_to(_ROOT).as_posix()
+        path_index = state.get("pathIndex") or {}
+        images = state.get("images") or {}
+        indexed_key = path_index.get(dest_rel)
+        if indexed_key and indexed_key != sha:
+            # The agent DID record something for this exact path, just under
+            # a different content key than we computed - a hashing mismatch
+            # between webui and classify_images.py's on-disk key algorithm,
+            # not a queue/LLM problem. (Root cause of a past incident: webui
+            # hashed with real sha256 while the agent keys state with
+            # blake2b - see _content_key.)
+            log.warning(
+                "classify: KEY MISMATCH for %s - pathIndex has key=%s but webui computed key=%s "
+                "(hash algorithm mismatch, not a queue/LLM issue)",
+                dest_rel, indexed_key[:12], sha[:12],
+            )
+        elif indexed_key and indexed_key.startswith("path:"):
+            fail_entry = images.get(indexed_key) or {}
+            log.warning(
+                "classify: %s recorded as FAILED by agent (uuid=%s) - see agent log above",
+                dest_rel, fail_entry.get("uuid"),
+            )
+        elif dest_rel in path_index:
+            log.warning("classify: %s indexed but no matching images[] entry (key=%s) - state corruption?", dest_rel, indexed_key)
+        else:
+            log.warning(
+                "classify: %s never reached by this run - not in pathIndex "
+                "(likely still queued behind other pending images, batch_size cutoff, "
+                "or excluded as a duplicate/token) - see candidate counts in agent log above",
+                dest_rel,
+            )
         return {
             "ok": False,
             "error": "Agent produced no result for this image (LLM offline, "
@@ -286,6 +330,53 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", _PORT), Handler)
     log.info("nc-vision-agent web UI: http://127.0.0.1:%d/", _PORT)
     server.serve_forever()
+
+
+def _run_with_reload() -> None:
+    """Dev mode: restart the server subprocess whenever app.py or
+    webui/static/ change.
+
+    Polling instead of a filesystem-events library (e.g. watchdog) - this
+    file is stdlib-only by design (see module docstring), and a 1s poll is
+    imperceptible for a local single-user dev server.
+    """
+    watch = [Path(__file__), *sorted(_STATIC_DIR.rglob("*"))]
+    command = [sys.executable, str(Path(__file__))]  # no --reload: child runs main() directly
+
+    def _snapshot() -> dict[Path, float]:
+        return {p: p.stat().st_mtime for p in watch if p.exists()}
+
+    def _spawn() -> subprocess.Popen:
+        log.info("hot-reload: starting server subprocess: %s", command)
+        return subprocess.Popen(command)
+
+    log.info("hot-reload: watching %d file(s) under %s and %s", len(watch), Path(__file__).name, _STATIC_DIR)
+    proc = _spawn()
+    last = _snapshot()
+    try:
+        while True:
+            time.sleep(1)
+            current = _snapshot()
+            if current != last:
+                changed = sorted(p.name for p in set(current) | set(last) if current.get(p) != last.get(p))
+                log.info("hot-reload: change detected in %s - restarting", changed)
+                last = current
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    log.warning("hot-reload: server subprocess did not exit in time - killing")
+                    proc.kill()
+                    proc.wait(timeout=5)
+                proc = _spawn()
+    except KeyboardInterrupt:
+        log.info("hot-reload: stopping")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        raise
 
 
 def _selftest() -> None:
