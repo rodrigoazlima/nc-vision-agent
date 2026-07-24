@@ -40,6 +40,22 @@ python src\nc_vision_agent\tools\extract_text.py        # OCR-style text extract
 
 LM Studio must be running at `http://localhost:1234/v1`.
 
+## Web UI
+
+The local Web UI provides a simple upload-and-classify flow. It uses the same
+`run.py` pipeline as the command-line entrypoint, so complete the setup above
+and start LM Studio first.
+
+```powershell
+python webui\app.py
+```
+
+Open http://127.0.0.1:8765 in a browser, select or drop an image, then choose
+**Classify image**. The upload is placed in
+`.knowledge-base/00-Inbox/webui-uploads/`; the agent's classification result
+and generated draft are shown in the page. The server listens only on
+`127.0.0.1` and is intended for local use.
+
 ## Docker
 
 ```powershell
