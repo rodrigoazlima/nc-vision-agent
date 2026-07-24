@@ -13,6 +13,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,13 @@ _STATE_FILE  = _ROOT / "state" / "processed-images.json"
 _RUN_SCRIPT  = _ROOT / "run.py"
 _STATIC_DIR  = Path(__file__).resolve().parent / "static"
 _PORT        = 8765
+
+# run.py's classify_images.py reads/writes state/processed-images.json with
+# no locking of its own - two concurrent runs (e.g. two browser tabs, or a
+# retry while the first request is still in flight) race on that file and
+# corrupt each other's entries. ThreadingHTTPServer gives each request its
+# own thread, so serialize agent runs here instead.
+_RUN_LOCK = threading.Lock()
 
 
 def _unique_path(directory: Path, filename: str) -> Path:
@@ -70,14 +78,17 @@ def _run_agent() -> tuple[int, str, str]:
 
 def _classify(filename: str, raw: bytes) -> dict:
     sha = hashlib.sha256(raw).hexdigest()
-    pre_state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
-    container = _container_name(sha, pre_state)
-    _unique_path(_INBOX / container, filename).write_bytes(raw)
 
-    _returncode, stdout, stderr = _run_agent()
-    log_tail = (stdout + "\n" + stderr).strip()[-4000:]
+    with _RUN_LOCK:
+        pre_state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
+        container = _container_name(sha, pre_state)
+        _unique_path(_INBOX / container, filename).write_bytes(raw)
 
-    state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
+        _returncode, stdout, stderr = _run_agent()
+        log_tail = (stdout + "\n" + stderr).strip()[-4000:]
+
+        state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
+
     entry = (state.get("images") or {}).get(sha)
     if entry is None:
         return {
