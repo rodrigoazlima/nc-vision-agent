@@ -11,9 +11,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
@@ -24,7 +26,17 @@ _PROCESSING  = _ROOT / ".knowledge-base" / "01-Processing"
 _STATE_FILE  = _ROOT / "state" / "processed-images.json"
 _RUN_SCRIPT  = _ROOT / "run.py"
 _STATIC_DIR  = Path(__file__).resolve().parent / "static"
+_LOG_FILE    = _ROOT / "state" / "logs" / "webui.log"  # same state/logs/ convention as classify_images.py's Logger
 _PORT        = 8765
+
+_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(), logging.FileHandler(_LOG_FILE, encoding="utf-8")],
+)
+log = logging.getLogger("nc-vision-webui")
 
 # run.py's classify_images.py reads/writes state/processed-images.json with
 # no locking of its own - two concurrent runs (e.g. two browser tabs, or a
@@ -69,28 +81,42 @@ def _find_draft_by_sha(sha: str) -> Optional[Path]:
 
 
 def _run_agent() -> tuple[int, str, str]:
+    log.debug("agent subprocess: launching %s %s", sys.executable, _RUN_SCRIPT)
+    t0 = time.monotonic()
     proc = subprocess.run(
         [sys.executable, str(_RUN_SCRIPT)],
         cwd=_ROOT, capture_output=True, text=True, timeout=900,
     )
+    log.info("agent subprocess: exit=%s elapsed=%.1fs", proc.returncode, time.monotonic() - t0)
+    if proc.stderr.strip():
+        log.debug("agent stderr tail: %s", proc.stderr.strip()[-1000:])
     return proc.returncode, proc.stdout, proc.stderr
 
 
 def _classify(filename: str, raw: bytes) -> dict:
     sha = hashlib.sha256(raw).hexdigest()
+    log.info("classify: filename=%r size=%dB sha=%s", filename, len(raw), sha[:12])
+
+    if _RUN_LOCK.locked():
+        log.info("classify: waiting on run-lock (another classification is in progress)")
 
     with _RUN_LOCK:
+        log.debug("classify: run-lock acquired")
         pre_state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
         container = _container_name(sha, pre_state)
-        _unique_path(_INBOX / container, filename).write_bytes(raw)
+        dest = _unique_path(_INBOX / container, filename)
+        dest.write_bytes(raw)
+        log.debug("classify: wrote upload to %s", dest.relative_to(_ROOT))
 
         _returncode, stdout, stderr = _run_agent()
         log_tail = (stdout + "\n" + stderr).strip()[-4000:]
 
         state = json.loads(_STATE_FILE.read_text(encoding="utf-8")) if _STATE_FILE.exists() else {}
+    log.debug("classify: run-lock released")
 
     entry = (state.get("images") or {}).get(sha)
     if entry is None:
+        log.warning("classify: no state entry for sha=%s after run - reporting failure", sha[:12])
         return {
             "ok": False,
             "error": "Agent produced no result for this image (LLM offline, "
@@ -100,6 +126,10 @@ def _classify(filename: str, raw: bytes) -> dict:
         }
 
     draft = _find_draft_by_sha(sha)
+    log.info(
+        "classify: matched sha=%s type=%s entity_type=%s draft=%s",
+        sha[:12], entry.get("type"), entry.get("entity_type"), draft.name if draft else None,
+    )
     return {
         "ok": True,
         "container": container,
@@ -121,8 +151,8 @@ def _classify(filename: str, raw: bytes) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):  # quieter default access log
-        pass
+    def log_message(self, fmt, *args):  # route stdlib's own access log through ours
+        log.debug("http: %s - %s", self.address_string(), fmt % args)
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -153,12 +183,13 @@ class Handler(BaseHTTPRequestHandler):
             result = _classify(payload["filename"], base64.b64decode(payload["data"]))
             self._send_json(result)
         except Exception as exc:
+            log.exception("do_POST: unhandled error")
             self._send_json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, status=500)
 
 
 def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", _PORT), Handler)
-    print(f"nc-vision-agent web UI: http://127.0.0.1:{_PORT}/")
+    log.info("nc-vision-agent web UI: http://127.0.0.1:%d/", _PORT)
     server.serve_forever()
 
 
