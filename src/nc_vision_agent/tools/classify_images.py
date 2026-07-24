@@ -381,8 +381,18 @@ def _is_token_file(path: Path) -> bool:
 
 
 def _candidate_images(state: dict, queue: dict) -> list[Path]:
-    """Return unprocessed images, non-PNG first (tokens last per spec)."""
+    """Return unprocessed images, non-PNG first (tokens last per spec).
+
+    Dedupes by *path* against pathIndex, but a re-uploaded/re-copied file with
+    byte-identical content lands at a new path and would otherwise slip past
+    that check and get reclassified from scratch (wasted LLM calls, duplicate
+    collision-bumped drafts). Also skip any candidate whose content hash
+    already matches a successfully-classified image, regardless of path.
+    """
     path_index: set[str] = set(state.get("pathIndex", {}).keys())
+    known_shas: set[str] = {
+        sha for sha in state.get("images", {}).keys() if not sha.startswith("path:")
+    }
     gen_tokens: set[str] = _generated_token_paths()
     images: list[Path] = []
     scanned = 0
@@ -402,6 +412,9 @@ def _candidate_images(state: dict, queue: dict) -> list[Path]:
         agents = queue.get(rel, {}).get("agents", {})
         if isinstance(agents, dict) and agents.get("vision") in ("done", "paused"):
             dlog.debug("_candidate_images: skip %s - queue agents.vision=%s", rel, agents.get("vision"))
+            continue
+        if known_shas and _sha256(path) in known_shas:
+            dlog.debug("_candidate_images: skip %s - duplicate content of already-classified image", rel)
             continue
         images.append(path)
     result = sorted(images, key=lambda p: (p.suffix.lower() == ".png", p))

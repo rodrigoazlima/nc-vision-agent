@@ -296,6 +296,20 @@ def test_candidate_images_excludes_token_filename_convention(tmp_path, monkeypat
     assert [p.name for p in result] == ["hero.png"]
 
 
+def test_candidate_images_skips_duplicate_content_at_new_path(tmp_path, monkeypatch):
+    # a.jpg is already classified (its sha recorded under state["images"]);
+    # b.jpg is a byte-identical re-upload at a different path (e.g. a repeat
+    # webui "classify" click) and must not be reclassified from scratch.
+    _setup_inbox(tmp_path, monkeypatch, ["a.jpg", "b.jpg"])
+    sha = ci._sha256(tmp_path / "00-Inbox" / "a.jpg")
+    state = {
+        "pathIndex": {"00-Inbox/a.jpg": sha},
+        "images": {sha: {"status": "ok"}},
+    }
+    result = ci._candidate_images(state, {})
+    assert result == []
+
+
 def test_is_token_file_matches_suffix_and_infix():
     assert ci._is_token_file(Path("hero-token.png"))
     assert ci._is_token_file(Path("hero.token.png"))
