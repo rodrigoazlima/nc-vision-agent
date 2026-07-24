@@ -86,12 +86,17 @@
   }
 
   .error { color: var(--danger); font-weight: 600; margin: 0 0 .5rem; }
+  .action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: .65rem; }
+  .action-grid button { width: 100%; text-align: left; padding: .7rem .8rem; }
+  .action-grid button small { display: block; font-weight: 400; opacity: .8; margin-top: .15rem; }
+  .action-result { margin-top: 1rem; }
+  .action-result h3 { font-size: .95rem; margin: 0 0 .45rem; }
 </style>
 </head>
 <body>
 <header>
   <h1>nc-vision-agent</h1>
-  <p>Drop an RPG image in, the vision agent classifies and renames it.</p>
+  <p>Run every current vision-agent action from one local control panel.</p>
 </header>
 
 <form id="form">
@@ -115,8 +120,25 @@
   </div>
 </form>
 
+<div class="card">
+  <h2>2. Agent actions</h2>
+  <p class="hint">Image actions use the selected upload above. Batch actions operate on the agent queue and drafts.</p>
+  <div class="action-grid" id="action-grid">
+    <button type="button" data-action="list_pending_images">List pending images<small>Inspect the classification queue</small></button>
+    <button type="button" data-action="detect_token" data-needs-image>Detect token<small>Check transparent PNG corners</small></button>
+    <button type="button" data-action="match_token_face" data-needs-image>Match token face<small>Find its portrait source</small></button>
+    <button type="button" data-action="classify_image" data-needs-image>Classify image (preview)<small>Classify without renaming or drafting</small></button>
+    <button type="button" data-action="run_classification_batch">Run classification batch<small>Classify pending images and write drafts</small></button>
+    <button type="button" data-action="retry_failed">Retry failed classifications<small>Clear and retry failed image entries</small></button>
+    <button type="button" data-action="extract_image_text" data-needs-image>Extract image text (preview)<small>OCR without changing a draft</small></button>
+    <button type="button" data-action="run_text_extraction_batch">Run text extraction batch<small>OCR classified images and append notes</small></button>
+    <button type="button" data-action="backfill_short_drafts">Backfill short drafts<small>Upgrade legacy draft bodies</small></button>
+  </div>
+  <div class="action-result" id="action-result" aria-live="polite"></div>
+</div>
+
 <div class="card" id="result-card">
-  <h2>2. Result</h2>
+  <h2>3. Classification result</h2>
   <div id="result"></div>
 </div>
 
@@ -132,6 +154,8 @@ const status = document.getElementById('status');
 const sendBtn = document.getElementById('send');
 const resultCard = document.getElementById('result-card');
 const result = document.getElementById('result');
+const actionGrid = document.getElementById('action-grid');
+const actionResult = document.getElementById('action-result');
 
 function setFile(file) {
   if (!file) return;
@@ -165,6 +189,46 @@ function fileToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+
+async function requestAction(action) {
+  const button = actionGrid.querySelector(`[data-action="${action}"]`);
+  const needsImage = button.hasAttribute('data-needs-image');
+  const file = fileInput.files[0];
+  if (needsImage && !file) {
+    actionResult.innerHTML = '<p class="error">Choose an image first.</p>';
+    return;
+  }
+
+  const buttons = actionGrid.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  actionResult.innerHTML = '<p id="action-status">Running action…</p>';
+  try {
+    const body = { action };
+    if (needsImage) {
+      body.filename = file.name;
+      body.data = await fileToBase64(file);
+    }
+    const response = await fetch('/api/actions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    const title = escapeHtml(payload.label || action);
+    const where = payload.imagePath ? `<p>Image: ${escapeHtml(payload.imagePath)}</p>` : '';
+    actionResult.innerHTML = payload.ok
+      ? `<h3>${title}</h3>${where}<pre>${escapeHtml(payload.output)}</pre>`
+      : `<h3>${title}</h3><p class="error">${escapeHtml(payload.error || payload.output || 'Action failed.')}</p>` +
+        (payload.output ? `<pre>${escapeHtml(payload.output)}</pre>` : '');
+  } catch (err) {
+    actionResult.innerHTML = `<p class="error">Request failed: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+
+actionGrid.addEventListener('click', e => {
+  const button = e.target.closest('button[data-action]');
+  if (button) requestAction(button.dataset.action);
+});
 
 function escapeHtml(s) {
   return (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

@@ -25,7 +25,6 @@ _INBOX       = _ROOT / ".knowledge-base" / "00-Inbox" / "webui-uploads"
 _PROCESSING  = _ROOT / ".knowledge-base" / "01-Processing"
 _STATE_FILE  = _ROOT / "state" / "processed-images.json"
 _RUN_SCRIPT  = _ROOT / "run.py"
-_CLASSIFY_SCRIPT = _ROOT / "src" / "nc_vision_agent" / "tools" / "classify_images.py"
 _EXTRACT_SCRIPT  = _ROOT / "src" / "nc_vision_agent" / "tools" / "extract_text.py"
 _STATIC_DIR  = Path(__file__).resolve().parent / "static"
 _LOG_FILE    = _ROOT / "state" / "logs" / "webui.log"  # same state/logs/ convention as classify_images.py's Logger
@@ -121,6 +120,8 @@ def _run_tool(module: str, name: str, args: dict) -> tuple[int, str, str]:
     """
     program = (
         "import json, sys; "
+        "from pathlib import Path; "
+        "sys.path.insert(0, str(Path.cwd() / 'src')); "
         "from importlib import import_module; "
         "request = json.load(sys.stdin); "
         "print(import_module(request['module']).call_tool(request['name'], request['args'], {}))"
@@ -166,7 +167,10 @@ def _perform_action(action: str, filename: Optional[str] = None, raw: Optional[b
 
     try:
         if "command" in spec:
-            rc, stdout, stderr = _run_command(spec["command"])
+            # Batch jobs mutate shared state and drafts. Keep them serialized
+            # with the original upload-and-classify endpoint as well.
+            with _RUN_LOCK:
+                rc, stdout, stderr = _run_command(spec["command"])
         else:
             rc, stdout, stderr = _run_tool(
                 spec["module"], spec["tool"], {"image_path": str(image_path)} if image_path else {}

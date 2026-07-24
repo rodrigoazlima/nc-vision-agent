@@ -42,16 +42,20 @@ LM Studio must be running at `http://localhost:1234/v1`.
 
 ## Web UI
 
-The local Web UI provides a simple upload-and-classify flow. It uses the same
-`run.py` pipeline as the command-line entrypoint, so complete the setup above
-and start LM Studio first.
+The local Web UI is an action dashboard for every concrete operation in
+`src/nc_vision_agent/tools`: queue inspection, token detection and face
+matching, non-writing classification/OCR previews, classification and OCR
+batches, failed-item retry, and short-draft backfill. It uses the same agent
+pipeline as the command-line entrypoints, so complete the setup above and
+start LM Studio first for LLM-backed actions.
 
 ```powershell
 python webui\app.py
 ```
 
-Open http://127.0.0.1:8765 in a browser, select or drop an image, then choose
-**Classify image**. The upload is placed in
+Open http://127.0.0.1:8765 in a browser. Select or drop an image before using
+an image-specific action; batch actions operate directly on the existing queue
+and drafts. The upload is placed in
 `.knowledge-base/00-Inbox/webui-uploads/`; the agent's classification result
 and generated draft are shown in the page. The server listens only on
 `127.0.0.1` and is intended for local use.
