@@ -25,7 +25,6 @@ _INBOX       = _ROOT / ".knowledge-base" / "00-Inbox" / "webui-uploads"
 _PROCESSING  = _ROOT / ".knowledge-base" / "01-Processing"
 _STATE_FILE  = _ROOT / "state" / "processed-images.json"
 _RUN_SCRIPT  = _ROOT / "run.py"
-_EXTRACT_SCRIPT  = _ROOT / "src" / "nc_vision_agent" / "tools" / "extract_text.py"
 _STATIC_DIR  = Path(__file__).resolve().parent / "static"
 _LOG_FILE    = _ROOT / "state" / "logs" / "webui.log"  # same state/logs/ convention as classify_images.py's Logger
 _PORT        = 8765
@@ -145,11 +144,6 @@ _ACTIONS = {
     },
     "run_classification_batch": {"label": "Run classification batch", "command": [sys.executable, str(_RUN_SCRIPT)]},
     "retry_failed": {"label": "Retry failed classifications", "command": [sys.executable, str(_RUN_SCRIPT), "--retry-failed"]},
-    "extract_image_text": {
-        "label": "Extract image text (preview)", "module": "nc_vision_agent.tools.extract_text", "tool": "extract_image_text", "needs_image": True,
-    },
-    "run_text_extraction_batch": {"label": "Run text extraction batch", "command": [sys.executable, str(_EXTRACT_SCRIPT)]},
-    "backfill_short_drafts": {"label": "Backfill short drafts", "command": [sys.executable, "-m", "nc_vision_agent.tools.backfill_short_drafts"]},
 }
 
 
